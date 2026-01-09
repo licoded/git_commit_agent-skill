@@ -1,3 +1,4 @@
 .claude-trace
 *.backup
 SKILL.md.backup
+*.skill
