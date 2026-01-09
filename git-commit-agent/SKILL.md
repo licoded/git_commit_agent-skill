@@ -192,25 +192,9 @@ done
 - 应用层 + 配置层（有依赖）→ 合并
 - 基础设施层 + 配置层（独立）→ 拆分
 
-**依赖判定标准**:
-
-✅ **有依赖（应合并）**:
-- 代码引用了新配置文件中的配置（如 `@Value`, `@Property`, `@ConfigurationProperties`, `getenv`）
-- API/Schema变更：接口定义、数据结构、protobuf/OpenAPI变更，需要调用方同步更新
-- 函数/方法重命名：需要所有使用方同步更新，否则编译失败
-- 数据库schema变更：字段添加/删除/类型修改，影响数据兼容性
-- 环境变量变更：代码依赖新的环境变量才能运行
-
-✅ **无依赖（应拆分）**:
-- **应用层可以独立运行和测试**：代码变更不依赖其他层面的变更
-- **基础设施层可以独立存在**：Docker/CI配置变更不影响代码逻辑
-- **仅有业务关联，无代码依赖**：虽然功能相关，但技术上可以独立部署
-- **各层面的变更可以分别提交和部署**：拆分后的每个commit都是可用的
-
-⚠️ **常见误判案例**:
-- ❌ "Java代码添加了logCommand参数，支持Docker的healthcheck" → 误判为有依赖
-  - **正确判定**：应用层（代码逻辑变更）+ 基础设施层（部署配置变更）= **无依赖，应拆分**
-  - **理由**：Java代码可以独立运行，Docker配置可以独立存在，两者没有代码依赖关系
+**核心判定标准**:
+- ✅ **有依赖（应合并）**: 代码引用新配置、API/Schema变更、重命名、schema变更、环境变量依赖
+- ✅ **无依赖（应拆分）**: 各层面可独立运行、仅有业务关联无代码依赖、可分别部署
 
 **不确定性处理规则**:
 
@@ -220,13 +204,15 @@ done
 - 复杂场景：涉及3个以上层面或模块的混合变更
 - 缺少先例：没有明确的参考案例可以遵循
 
-**示例**: 检测到应用层 + 基础设施层混合变更，但不太确定是否应该拆分时，应该询问用户而非自行判断。
+**关键原则**: 宁可询问用户，也不要自行猜测并做出错误的拆分决策。
 
 **IMPORTANT**: When detecting multiple layers without strong dependencies, **MUST use AskUserQuestion** to ask user:
 - Show layer breakdown with file counts
 - Provide clear options: split by layer (recommended), merge, or customize
 - Support 3+ splits when detecting multiple layers/modules
 - **When uncertain (confidence < 85%)**: Always ask user instead of guessing
+
+**For detailed dependency criteria**: See [references/DEPENDENCY_CRITERIA.md](references/DEPENDENCY_CRITERIA.md)
 
 **For detailed decision tree**: See [references/DECISION_TREE.md](references/DECISION_TREE.md)
 
@@ -684,6 +670,7 @@ For detailed information, see:
 
 - **[references/CONVENTIONS.md](references/CONVENTIONS.md)** - Complete Vue.js Commit Convention specification
 - **[references/SENSITIVE_RULES.md](references/SENSITIVE_RULES.md)** - Sensitive information detection rules
+- **[references/DEPENDENCY_CRITERIA.md](references/DEPENDENCY_CRITERIA.md)** - Dependency determination criteria
 - **[references/CONFIGURATION.md](references/CONFIGURATION.md)** - Complete configuration guide
 - **[references/DECISION_TREE.md](references/DECISION_TREE.md)** - Split decision tree and scenarios
 - **[references/EXAMPLES.md](references/EXAMPLES.md)** - Detailed usage examples

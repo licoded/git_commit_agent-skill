@@ -157,6 +157,8 @@ done
 
 #### 拆分规则
 
+**For detailed dependency determination criteria**: See [DEPENDENCY_CRITERIA.md](DEPENDENCY_CRITERIA.md)
+
 **场景 1: 应用层 + 基础设施层** → 通常拆分
 
 **示例**:
@@ -597,90 +599,15 @@ Skill 只提供建议，用户可以根据实际情况调整。
 
 **关键原则**：宁可询问用户，也不要自行猜测并做出错误的拆分决策。
 
----
-
-## 失败案例分析
-
-### 案例：误判"业务关联"为"代码依赖"
-
-**场景背景**:
-一个包含应用层和基础设施层混合变更的 refactor 任务，模型错误地判断为"有依赖"而合并提交。
-
-**变更内容**:
-```
-Staged files:
-  - backend/.../CommandExecutionService.java (refactor, 应用层)
-  - backend/.../CommandExecutionService.java (refactor, 应用层)
-  - backend/.dockerignore (refactor, 基础设施层)
-  - backend/Dockerfile (refactor, 基础设施层)
-  - frontend/.dockerignore (refactor, 基础设施层)
-  - frontend/Dockerfile (refactor, 基础设施层)
-  - docker-compose.yml (refactor, 基础设施层)
-```
-
-**模型的错误分析**:
-```
-Looking at the changes more carefully:
-  - The Java code changes are minor (just adding a logCommand parameter)
-  - The main focus is on Docker configuration (health checks)
-  - The Java changes support the Docker changes (conditional logging for health checks)
-  → Decision: "应用代码支持 Docker 配置" = 有依赖 = 合并为单个提交
-```
-
-**正确的分析**:
-```
-1. 按 Intent 分组: refactor - 所有文件属于同一意图
-
-2. 检查层面:
-   - 应用层: CommandExecutionService.java × 2 (新增 logCommand 参数)
-   - 基础设施层: Dockerfile × 2, docker-compose.yml, .dockerignore × 2
-
-3. 检查依赖:
-   - 应用层: 代码逻辑变更（添加参数支持灵活日志控制）
-   - 基础设施层: 部署配置变更（优化 healthcheck 配置）
-   - **依赖判定**:
-     ✅ 应用层可以独立运行和测试
-     ✅ 基础设施层可以独立存在
-     ✅ 仅有业务关联（都是 refactor healthcheck 相关），无代码依赖
-     ✅ 各层面的变更可以分别提交和部署
-   - **结论**: 无依赖 → 应该拆分
-
-4. 正确的拆分方案:
-   Commit 1: refactor(service): add logCommand parameter
-   - Add logCommand parameter to executeLocal()
-   - Support conditional logging for health checks
-   - Files: CommandExecutionService.java (2 个文件)
-
-   Commit 2: refactor(docker): optimize health check configuration
-   - Move health check from Dockerfile to docker-compose.yml
-   - Update health check endpoint to http://127.0.0.1:80/
-   - Reduce start_period from 10s to 5s
-   - Add Dockerfile to .dockerignore
-   - Files: Dockerfile × 2, docker-compose.yml, .dockerignore × 2 (5 个文件)
-```
-
-**错误根源**:
-1. **误判"支持"为"依赖"**：Java代码的 logCommand 参数虽然用于减少 healthcheck 的日志，但这只是业务逻辑上的关联，不是代码依赖关系
-2. **缺少明确的依赖判定标准**：模型没有使用"应用层可以独立运行"和"基础设施层可以独立存在"这两个关键判定标准
-3. **缺少不确定性处理**：当模型判断"Java changes are minor"时，应该意识到这是一个边界情况，肯定度不足85%，应该询问用户而非自行决定
-
-**经验教训**:
-- ⚠️ **业务关联 ≠ 代码依赖**：两个变更虽然在业务上相关，但技术上可以独立部署，就应该拆分
-- ✅ **使用明确的判定标准**：必须检查"应用层可以独立运行"和"基础设施层可以独立存在"
-- ✅ **不确定时询问用户**：当肯定度 < 85% 时，应该使用 AskUserQuestion 让用户决定，而不是猜测
-- ✅ **遵循默认原则**：应用层 + 基础设施层，默认倾向于拆分（除非明确有依赖）
-
-**如何避免**:
-1. 使用依赖判定标准清单，逐项检查
-2. 评估自己的肯定度，如果 < 85%，立即询问用户
-3. 参考 DECISION_TREE.md 中的场景示例
-4. 优先考虑"可以拆分"而非"可以合并"
+**For detailed failure case analysis**: See [DEPENDENCY_CRITERIA.md#失败案例分析](DEPENDENCY_CRITERIA.md#失败案例分析)
 
 ---
 
 ## 相关文档
 
 - [SKILL.md](../SKILL.md) - 核心工作流
+- [DEPENDENCY_CRITERIA.md](DEPENDENCY_CRITERIA.md) - 依赖判定标准
+- [INTERACTION_PATTERNS.md](INTERACTION_PATTERNS.md) - 用户交互模式
 - [CONFIGURATION.md](CONFIGURATION.md) - 配置说明（拆分策略）
 - [EXAMPLES.md](EXAMPLES.md) - 使用示例
 - [SENSITIVE_RULES.md](SENSITIVE_RULES.md) - 敏感信息检测
