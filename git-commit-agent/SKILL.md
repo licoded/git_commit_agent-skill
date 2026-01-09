@@ -52,7 +52,7 @@ git diff --cached --name-status --diff-filter=ACDMRT
 
 **If no staged changes**:
 
-First check for common directories that should be ignored:
+Check for common directories that should be ignored:
 
 ```bash
 # Detect common ignore dirs
@@ -62,32 +62,13 @@ git status --short | grep -E "node_modules|__pycache__|\.pytest_cache|build|dist
 total_files=$(git status --short | wc -l)
 ```
 
-If `many_files_threshold` exceeded (default: 100), **use AskUserQuestion**:
-
-```yaml
-questions:
-  - question: 检测到 ${total_files} 个文件变更，可能包含应该被忽略的文件（如 node_modules）。是否继续？
-    header: 大量变更警告
-    multiSelect: false
-    options:
-      - label: 继续自动添加
-        description: 执行 git add . 添加所有变更
-      - label: 先查看文件列表
-        description: 显示所有变更文件，再决定是否添加
-      - label: 手动选择文件
-        description: 手动指定要添加的文件
-      - label: 取消提交
-        description: 取消本次提交操作
-```
-
-**User selection handling**:
-- **继续自动添加** → Execute `git add .`
-- **先查看文件列表** → Show `git status --short`, then ask again
-- **手动选择文件** → Prompt user for specific files
-- **取消提交** → Stop workflow
+If `many_files_threshold` exceeded (default: 100), **use AskUserQuestion** to confirm:
+- Continue with auto-add (`git add .`)
+- Show file list first, then ask again
+- Manually select files
+- Cancel operation
 
 **Auto-add (if enabled and user confirms)**:
-
 ```bash
 git add .
 ```
@@ -138,34 +119,12 @@ example, test, dummy, placeholder, xxxx, YOUR_, <your>
 ```
 
 **If sensitive data detected**, **use AskUserQuestion**:
-
-```
-🚨 强规则命中 - 检测到敏感信息！
-
-文件: config/app.env:3
-  AKIAIOSFODNN7EXAMPLE
-```
-
-```yaml
-questions:
-  - question: 检测到可能的敏感信息，如何处理？
-    header: 安全警告
-    multiSelect: false
-    options:
-      - label: 取消提交（推荐）
-        description: 阻止提交，先修复敏感信息问题
-      - label: 查看上下文
-        description: 显示敏感信息前后的代码上下文
-      - label: 强制继续
-        description: 忽略警告，继续提交（风险自负）
-```
-
-**User selection handling**:
-- **取消提交** → Stop workflow, provide remediation steps
-- **查看上下文** → Show ±3 lines around sensitive data
-- **强制继续** → Add warning to commit message, proceed
+- **强规则命中**: Require cancellation or explicit override
+- **弱规则命中**: Ask for confirmation, show context
 
 **For detailed rules**: See [references/SENSITIVE_RULES.md](references/SENSITIVE_RULES.md)
+
+**For interaction patterns**: See [references/INTERACTION_PATTERNS.md](references/INTERACTION_PATTERNS.md#2-敏感信息检测)
 
 ---
 
@@ -233,93 +192,14 @@ done
 - 应用层 + 配置层（有依赖）→ 合并
 - 基础设施层 + 配置层（独立）→ 拆分
 
-**IMPORTANT**: When detecting multiple layers without strong dependencies, **MUST use AskUserQuestion to ask user**:
-
-```
-⚠️  检测到多个层面的变更，建议按层面拆分
-
-应用层 (2 个文件):
-  - backend/.../CommandExecutionService.java
-  - backend/.../CommandExecutionService.java
-
-基础设施层 (5 个文件):
-  - backend/.dockerignore, backend/Dockerfile
-  - frontend/.dockerignore, frontend/Dockerfile
-  - docker-compose.yml
-
-拆分方案:
-
-Commit 1: refactor(service) - 应用层变更
-  Add logCommand parameter for flexible logging control
-
-Commit 2: refactor(docker) - 基础设施层变更
-  Move health check from Dockerfile to docker-compose.yml
-```
-
-**Use AskUserQuestion**:
-
-```yaml
-questions:
-  - question: 检测到应用层和基础设施层混合变更，如何提交？
-    header: 拆分决策
-    multiSelect: false
-    options:
-      - label: 按层面拆分（推荐）
-        description: 拆分为 2 个提交：先应用层，后基础设施层
-      - label: 合并为单个
-        description: 所有变更合并为 1 个提交
-      - label: 自定义方案
-        description: 手动指定如何拆分
-```
-
-**User selection handling**:
-- **按层面拆分** → Execute Step 6 with split commits (Commit 1, then Commit 2)
-- **合并为单个** → Execute Step 6 with single commit
-- **自定义方案** → Ask user for detailed split plan (support 3+ commits)
-
-**For 3+ splits**, use same pattern:
-
-```yaml
-questions:
-  - question: 检测到 3 个意图的变更（feat + fix + docs），如何提交？
-    header: 拆分决策
-    multiSelect: false
-    options:
-      - label: 按意图拆分（3 个提交）
-        description: feat → fix → docs 分别提交
-      - label: 合并 feat + fix
-        description: feat 和 fix 合并，docs 单独
-      - label: 全部合并
-        description: 所有变更合并为 1 个提交
-      - label: 自定义
-        description: 手动指定拆分方案
-```
-
-**Key principles**:
-- Support **2-5 splits** (beyond that, suggest manual intervention)
-- Each option should be **clear and actionable**
-- **Recommended option** should be first
-- **Custom option** allows flexible user control
-
-**Decision tree**:
-```
-1. 按意图分组:
-   ├─ 不同意图 → 必须拆分
-
-2. 每个意图组内:
-   ├─ 检查变更层面
-   │  ├─ 单一层面 → 继续判断
-   │  ├─ 多层面 → 检查依赖
-   │  │  ├─ 有依赖 → 合并
-   │  │  └─ 无依赖 → 按层面拆分
-   │
-   └─ 检查模块
-      ├─ 单模块 → 单个 commit
-      ├─ 多模块相关 → 合并
-      └─ 多模块不相关 → 拆分
-```
+**IMPORTANT**: When detecting multiple layers without strong dependencies, **MUST use AskUserQuestion** to ask user:
+- Show layer breakdown with file counts
+- Provide clear options: split by layer (recommended), merge, or customize
+- Support 3+ splits when detecting multiple layers/modules
 
 **For detailed decision tree**: See [references/DECISION_TREE.md](references/DECISION_TREE.md)
+
+**For interaction patterns**: See [references/INTERACTION_PATTERNS.md](references/INTERACTION_PATTERNS.md#3-拆分决策多层面)
 
 ---
 
@@ -407,26 +287,12 @@ Scan diff for:
 - deleted exports/interfaces
 - config schema changes
 
-If breaking change detected → **use AskUserQuestion**:
+If breaking change detected → **use AskUserQuestion** to confirm:
+- Confirm with ! marker
+- Normal commit without !
+- Show detected changes first
 
-```yaml
-questions:
-  - question: 检测到可能的 breaking change（不兼容变更），确认吗？
-    header: Breaking Change 确认
-    multiSelect: false
-    options:
-      - label: 确认是 breaking change
-        description: 在 type/scope 后添加 ! 标记，并在 footer 说明BREAKING CHANGE
-      - label: 不是 breaking change
-        description: 普通提交，不添加 ! 标记
-      - label: 查看变更详情
-        description: 显示检测到的变更内容，再决定
-```
-
-**User selection handling**:
-- **确认是 breaking change** → Add `!` after type/scope, add BREAKING CHANGE footer
-- **不是 breaking change** → Normal commit without `!`
-- **查看变更详情** → Show detected changes (diff snippets), then ask again
+**For interaction patterns**: See [references/INTERACTION_PATTERNS.md](references/INTERACTION_PATTERNS.md#6-breaking-change-确认)
 
 #### Body (Optional)
 
@@ -525,88 +391,26 @@ git commit -m 'message-2'
 #### Same File, Different Commits (Hunk-Level Split)
 
 If same file needs different commits, **use AskUserQuestion**:
+- Guide user through interactive `git add -p` process
+- Offer to merge as single commit
+- Show file diff first
 
-```yaml
-questions:
-  - question: 文件 {file} 包含多个意图的变更，需要手动交互式拆分。是否继续？
-    header: 多意图文件拆分
-    multiSelect: false
-    options:
-      - label: 指导我交互式拆分
-        description: 提供 git add -p 命令指导，手动拆分 hunk
-      - label: 合并为单个提交
-        description: 不拆分，所有变更作为一个提交
-      - label: 查看文件变更
-        description: 显示文件的详细 diff，再决定
-```
-
-**User selection handling**:
-- **指导我交互式拆分** → Provide step-by-step `git add -p` instructions:
-  ```bash
-  # Step 1: View hunks
-  git diff --cached {file}
-
-  # Step 2: Interactive add
-  git add -p {file}
-  # y: stage this hunk
-  # n: don't stage this hunk
-  # a: stage this and all remaining hunks
-  # q: quit
-
-  # Step 3: Commit first part
-  git commit -m "first commit message"
-
-  # Step 4: Add remaining
-  git add {file}
-  git commit -m "second commit message"
-  ```
-- **合并为单个提交** → Treat as single commit
-- **查看文件变更** → Show `git diff --cached {file}`, then ask again
+**For interaction patterns**: See [references/INTERACTION_PATTERNS.md](references/INTERACTION_PATTERNS.md#7-hunk-level-拆分)
 
 #### Dry-Run Mode
 
 If `--dry-run` flag present, show preview then **use AskUserQuestion**:
+- Show complete commit plan (messages, files, commands)
+- Show sensitive data detection results
+- Show split suggestions
+- Show quality validation results
 
-```
-🔍 Dry-Run Mode - 不会实际执行提交
+**Options**:
+- Execute actual commits
+- Adjust plan (modify message, adjust split)
+- Cancel without changes
 
-=== 计划的提交 ===
-
-Commit 1: {type}({scope}): {subject}
-  文件: {files}
-  Message:
-    {full_message}
-
-  将执行: git commit --only {files} -m "{message}"
-
-=== 敏感信息检测 ===
-{detection_results}
-
-=== 拆分建议 ===
-{split_suggestion}
-
-=== 质量检查 ===
-{validation_results}
-```
-
-```yaml
-questions:
-  - question: Dry-run 预览完成，是否执行实际提交？
-    header: 执行确认
-    multiSelect: false
-    options:
-      - label: 确认执行
-        description: 执行计划的提交（真实 git commit）
-      - label: 调整方案
-        description: 修改提交计划或拆分方案
-      - label: 取消
-        description: 取消提交，不执行任何操作
-```
-
-**User selection handling**:
-- **确认执行** → Execute actual git commit(s) without dry-run
-- **调整方案** → Modify plan (change message, adjust split, etc.)
-- **取消** → Stop workflow, no changes made
+**For interaction patterns**: See [references/INTERACTION_PATTERNS.md](references/INTERACTION_PATTERNS.md#8-dry-run-预览确认)
 
 #### Verification
 
@@ -625,7 +429,6 @@ git diff --cached --name-status
 ### Step 7: Report Result
 
 **Success (single commit)**:
-
 ```
 ✅ 提交成功!
 
@@ -643,7 +446,6 @@ Commit: abc1234
 ```
 
 **Success (multiple commits)**:
-
 ```
 ✅ 成功提交 2 个 commit!
 
@@ -657,7 +459,6 @@ Commit 2: def5678
 ```
 
 **Failure with remediation**:
-
 ```
 ❌ 提交失败: {error}
 
@@ -786,29 +587,18 @@ M docs/api/users.md
 - Different intents: feat (backend) + docs (docs)
 - Should split
 
-**Result**:
-```yaml
-questions:
-  - question: 检测到多个意图（feat + docs），如何提交？
-    header: 多意图拆分
-    multiSelect: false
-    options:
-      - label: 按意图拆分（推荐）
-        description: 拆分为 2 个提交：feat → docs
-      - label: 合并为单个
-        description: 所有变更合并为 1 个提交
+**Result**: Use AskUserQuestion to offer:
+- Split by intent (recommended): 2 commits (feat → docs)
+- Merge as single: 1 commit
+
+If split selected:
+```bash
+# Commit 1: feat
+git commit --only backend/service/UserService.java -m 'feat(user): add user management feature'
+
+# Commit 2: docs
+git commit --only docs/api/users.md -m 'docs: update user API documentation'
 ```
-
-**User selection handling**:
-- **按意图拆分** → Execute 2 commits:
-  ```bash
-  # Commit 1: feat
-  git commit --only backend/service/UserService.java -m 'feat(user): add user management feature'
-
-  # Commit 2: docs
-  git commit --only docs/api/users.md -m 'docs: update user API documentation'
-  ```
-- **合并为单个** → Execute single commit with both files
 
 **For more examples**: See [references/EXAMPLES.md](references/EXAMPLES.md)
 
@@ -866,3 +656,4 @@ For detailed information, see:
 - **[references/CONFIGURATION.md](references/CONFIGURATION.md)** - Complete configuration guide
 - **[references/DECISION_TREE.md](references/DECISION_TREE.md)** - Split decision tree and scenarios
 - **[references/EXAMPLES.md](references/EXAMPLES.md)** - Detailed usage examples
+- **[references/INTERACTION_PATTERNS.md](references/INTERACTION_PATTERNS.md)** - User interaction patterns and AskUserQuestion usage
