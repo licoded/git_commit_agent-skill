@@ -1,101 +1,870 @@
 ---
 name: git-commit-agent
-description: Intelligent Git commit assistant that analyzes staged changes, detects sensitive information, intelligently splits commits, and generates standardized commit messages following Vue.js or Conventional Commits conventions. Use when user asks to commit code with commands like "/commit", "帮我提交", "commit these changes", or any request to create git commits. The skill handles multi-module changes, sensitive data detection, and quality scoring for commit messages.
+description: Intelligent Git commit assistant that analyzes staged changes, detects sensitive information, intelligently splits commits by intent, and generates standardized commit messages following Vue.js Commit Convention. Use when user asks to commit code with commands like "/commit", "/commit --dry-run", "帮我提交", "commit these changes", or any request to create git commits. The skill handles multi-module changes, sensitive data detection with strong/weak rules, breaking change detection, and dry-run mode. Supports both Chinese and English with configurable language strategy.
 ---
 
 # Git Commit Agent
 
-智能 Git 提交助手，分析代码变更并生成符合规范的 commit message。
+智能 Git 提交助手，分析代码变更并生成符合 Vue.js 规范的 commit message。
+
+## Core Principles
+
+1. **Never破坏用户的 staged** - 使用 `--only` 而非粗暴 `reset`
+2. **优先按意图分组** - 先分 feat/fix/docs，再按 module 细分
+3. **敏感信息默认阻断** - 强规则直接阻止，弱规则询问确认
 
 ## Quick Start
 
-When user invokes this skill (via `/commit`, "帮我提交代码", or similar):
+```bash
+# 1. Stage changes first
+git add <files>
 
-1. Check for staged changes
-2. Detect sensitive information
-3. Analyze commit structure (split if needed)
-4. Generate commit message
-5. Execute commit
+# 2. Invoke skill
+/commit 添加了用户登录功能
+
+# 3. Or use dry-run to preview
+/commit --dry-run
+```
 
 ## Workflow
 
-### Step 1: Check Git Repository
+### Step 1: Repository & Status Check
 
-Verify we're in a git repo with staged changes:
+**Check environment**:
 
 ```bash
-# Check if git repo
+# Verify git repository
 git rev-parse --is-inside-work-tree
 
-# Check for staged changes
+# Get comprehensive status (staged + unstaged)
+git status --porcelain=v1
+
+# Get staged files with detailed status
+git diff --cached --name-status --diff-filter=ACDMRT
+```
+
+**Status analysis**:
+- First column: staged status (A/M/D/R/T...)
+- Second column: unstaged status (if exists)
+- `--diff-filter`: focus on Added/Modified/Deleted/Renamed/Copied/Type-change
+
+**If no staged changes**:
+```
+❌ 没有已 staged 的变更
+提示：使用 git add <files> 添加文件
+
+ℹ️  检测到 {n} 个 unstaged 文件
+是否查看这些文件？(使用 git status)
+```
+
+**If both staged and unstaged exist**:
+```
+✅ 检测到 {n} 个 staged 文件
+⚠️  还有 {m} 个 unstaged 文件未添加
+提示：只会提交已 staged 的变更
+```
+
+### Step 2: Analyze Staged Changes
+
+**Get detailed diff**:
+
+```bash
+# Get full diff for analysis
+git diff --cached
+
+# For sensitive detection (no context, faster)
+git diff --cached -U0
+```
+
+**Analyze each file**:
+- **Status**: A (added), M (modified), D (deleted), R (renamed), T (type-change)
+- **Module**: Determine using [module_map](#configuration) or fallback to top-level directory
+- **Language**: .java, .py, .ts, .js, .md, .go, .rs, etc.
+- **Intent (初判)**: feat/fix/docs/test/ci/build/refactor/chore
+
+**Module mapping** (configurable via `.git-commit-agent.yml`):
+
+```yaml
+module_map:
+  backend: ["backend/", "server/", "api/", "src/main/"]
+  frontend: ["frontend/", "web/", "ui/", "client/"]
+  docs: ["docs/", "*.md"]
+  test: ["tests/", "test/", "__tests__/", "*_test.py"]
+  ci: [".github/", ".gitlab/", ".gitignore"]
+  scripts: ["scripts/", "tools/", "bin/"]
+  config: ["config/", "*.yml", "*.yaml", "*.toml"]
+```
+
+**Fallback strategy**: If no match → use first directory component as scope
+
+### Step 3: Sensitive Information Detection
+
+**CRITICAL**: Only scan `git diff --cached -U0` (staged changes only), NOT working directory.
+
+#### Strong Rules (Default: BLOCK)
+
+These patterns indicate definite secrets. **Block by default, require explicit user confirmation to continue**:
+
+**AWS Keys**:
+```
+AKIA[0-9A-Z]{16}
+ASIA[0-9A-Z]{16}
+[A-Z0-9]{20}  # AWS secret pattern
+```
+
+**PEM Private Key Blocks**:
+```
+-----BEGIN [A-Z]+ PRIVATE KEY-----
+-----BEGIN RSA PRIVATE KEY-----
+-----BEGIN EC PRIVATE KEY-----
+```
+
+**Service Tokens (distinctive prefixes)**:
+```
+sk-ant-...      (Anthropic)
+xoxb-|xoxp-     (Slack)
+ghp_|gho_|ghu_  (GitHub)
+glpat-          (GitLab)
+AKIA...         (AWS)
+```
+
+**Detection output**:
+```
+🚨 强规则命中 - 检测到敏感信息！
+
+文件: config/app.env:3
+  AKIAIOSFODNN7EXAMPLE
+
+⚠️  这是高置信度的敏感信息，默认阻止提交
+
+处理建议:
+1. 撤回 staged: git restore --staged <file>
+2. 删除文件: git rm <file>
+3. 替换为环境变量
+4. 添加到 .gitignore
+5. 如果是测试数据: 添加到 allowlist
+
+选项:
+1. 强制继续（不推荐）
+2. 取消提交
+3. 查看详细上下文
+```
+
+#### Weak Rules (Ask for Confirmation)
+
+These patterns might be secrets, require user judgment:
+
+**Long base64-like strings** (≥20 chars, high entropy):
+```
+[A-Za-z0-9+/]{20,}={0,2}
+```
+
+**URL patterns**:
+```
+DATABASE_URL=
+REDIS_URL=
+MONGODB_URI=
+postgresql://
+mysql://
+```
+
+**Authorization headers**:
+```
+Authorization: Bearer [a-zA-Z0-9]{20,}
+```
+
+**Detection output**:
+```
+⚠️  弱规则命中 - 可能的敏感信息
+
+文件: src/api.ts:42
+  const token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...";
+
+这可能是:
+- JWT token (敏感)
+- 测试用 token (安全)
+- 示例代码 (安全)
+
+选项:
+1. 继续提交
+2. 取消提交
+3. 查看上下文 (±3 lines)
+```
+
+#### Allowlist Patterns
+
+Skip detection if match:
+```
+example
+test
+dummy
+placeholder
+xxxx
+xxxxxxxx
+YOUR_
+<your>
+```
+
+#### Remediation Guidance
+
+When sensitive data detected, provide actionable steps:
+```
+修复建议:
+
+方法 1: 撤回 staged
+  git restore --staged <file>
+  git restore <file>  # 如果还要删除工作区改动
+
+方法 2: 替换为环境变量
+  - export API_KEY=$(echo $API_KEY)
+  - 或使用 .env.example 模板
+
+方法 3: 添加到 .gitignore
+  echo "*.env" >> .gitignore
+
+方法 4: 旋转密钥（如果已暴露）
+  - 到服务控制台撤销旧密钥
+  - 生成新密钥
+  - 更新配置
+```
+
+### Step 4: Plan Commits (Intent-First Splitting)
+
+**Primary split criteria: Intent (type)**
+
+Group changes by commit type first:
+- **feat** - New features
+- **fix** - Bug fixes
+- **docs** - Documentation only
+- **test** - Test changes
+- **ci** - CI configuration
+- **build** - Build system
+- **refactor** - Code refactoring (not feat/fix)
+- **chore** - Everything else
+
+**Secondary split criteria: Module**
+
+Within each intent group, consider splitting by module:
+- Single module → single commit
+- Multiple related modules (same feature) → can merge
+- Multiple unrelated modules → suggest splitting
+
+**Dependency awareness**:
+
+**MERGE倾向** (avoid breaking commits):
+- Same API/interface file changed in multiple commits
+- Schema changes (protobuf, OpenAPI, GraphQL)
+- Rename + usage updates
+- Backend API + frontend API call (same feature)
+
+**SPLIT倾向**:
+- Different intents (feat + fix)
+- Different features (even within same module)
+- Docs + code (unless docs are integral)
+
+**Decision tree**:
+```
+1. 按意图 (intent) 分组:
+   ├─ 相同意图 → 检查依赖关系
+   │  ├─ 有依赖 → 合并
+   │  └─ 无依赖 → 可拆分
+   └─ 不同意图 → 必须拆分
+
+2. 每个意图组内:
+   ├─ 单模块 → 单个 commit
+   ├─ 多模块相关 → 合并
+   └─ 多模块不相关 → 拆分
+```
+
+**Example scenarios**:
+
+**Scenario 1: Same feature across modules (MERGE)**:
+```
+Files:
+- backend/service/AuthService.java (new - feat)
+- frontend/src/components/LoginForm.tsx (new - feat)
+- docs/api.md (updated - docs)
+
+Analysis:
+- Auth feature spans backend + frontend
+- Should keep together for atomic feature
+
+Plan:
+1. feat(auth): implement login feature (backend + frontend)
+2. docs: update API documentation
+```
+
+**Scenario 2: Mixed intents (SPLIT)**:
+```
+Files:
+- backend/service/UserService.java (fix bug)
+- backend/service/OrderService.java (refactor)
+- README.md (docs)
+
+Analysis:
+- Different intents in same module
+- Should split by intent
+
+Plan:
+1. fix(user): resolve null pointer in UserService
+2. refactor(order): extract validation logic
+3. docs: update README with new features
+```
+
+**Scenario 3: Dependency detected (MERGE)**:
+```
+Files:
+- backend/api/UserAPI.java (changed endpoint signature)
+- frontend/src/api/user.ts (updated call to match)
+
+Analysis:
+- Breaking change in backend + frontend update
+- Cannot split (middle state would be broken)
+
+Plan:
+1. feat(api)!: change user endpoint signature
+
+   BREAKING CHANGE: UserAPI.getUser() now returns UserDTO
+   instead of Map. Frontend updated accordingly.
+```
+
+**Ask user confirmation**:
+```
+建议拆分为 {n} 个提交:
+
+Commit 1: {type}({scope}): {subject}
+  文件: {files}
+  意图: {intent}
+
+Commit 2: {type}({scope}): {subject}
+  文件: {files}
+  意图: {intent}
+
+💡 拆分原因: {reason}
+
+选项:
+1. 确认拆分
+2. 合并为单个提交
+3. 自定义拆分方案
+4. 查看详细变更
+```
+
+### Step 5: Generate Commit Message
+
+Follow Vue.js Commit Convention. See [CONVENTIONS.md](references/CONVENTIONS.md) for full spec.
+
+**Format**:
+```
+<type>(<scope>): <subject>
+
+<body>
+
+<footer>
+```
+
+#### Type Selection (Intent-First)
+
+**Priority order**:
+
+1. **User explicit context**:
+   ```
+   "修复了登录 bug" → fix
+   "重构了 Service 层" → refactor
+   "添加了新功能" → feat
+   ```
+
+2. **File path analysis**:
+   ```
+   docs/, *.md → docs
+   test/, tests/, *_test.* → test
+   .github/, .gitlab/ → ci
+   pom.xml, package.json, build.gradle → build
+   ```
+
+3. **Diff semantic analysis**:
+   ```
+   Only comments/README changed → docs
+   Tests + implementation → feat (test is secondary)
+   Config changes only → chore
+   ```
+
+4. **Default fallback**: `chore`
+
+**NEVER use "New files added → feat"** - it's unreliable.
+
+#### Scope Selection
+
+Use configured [module_map](#configuration):
+
+```yaml
+module_map:
+  backend: ["backend/", "src/main/"]
+  frontend: ["frontend/", "web/"]
+  docs: ["docs/"]
+```
+
+**Strategy**:
+- Single module → use module name
+- Multiple modules (single commit) → omit scope or use most relevant
+- Multiple modules (split) → each commit uses its module
+- Unknown → fallback to top-level directory
+
+#### Subject Rules
+
+1. **Imperative mood**: "add" not "added" or "adding"
+2. **Lowercase first letter**
+3. **Max 50 characters**
+4. **No period at end**
+5. **Be specific and concise**
+
+**Language strategy** (configurable):
+
+```yaml
+message_language: follow_user  # follow_user | en | zh
+```
+
+**Examples**:
+```
+follow_user:
+  "添加了用户登录" → "add user login"
+  "fix authentication bug" → "fix authentication bug"
+
+en:
+  "添加了用户登录" → "add user login"
+  "修复 bug" → "fix bug"
+
+zh:
+  "add user login" → "添加用户登录"
+  "fix bug" → "修复 bug"
+```
+
+**Learn from project history**:
+
+```bash
+git log --oneline -n 20
+```
+
+Analyze:
+- Common types used
+- Scope naming patterns
+- Language (zh/en)
+- Body usage frequency
+
+#### Breaking Change Detection
+
+Add `!` after type/scope if breaking change detected:
+
+**Breaking indicators**:
+- Deleted/renamed public API
+- Changed method signature
+- Removed config field
+- Behavior change affecting users
+- Database schema change
+
+**Format**:
+```
+feat(api)!: change user endpoint response format
+
+BREAKING CHANGE: UserAPI now returns camelCase instead of snake_case.
+Frontend consumers must update accordingly.
+```
+
+**Detection logic**:
+```
+Scan diff for:
+- @Deprecated annotations with removal
+- func/method signature changes
+- deleted exports/interfaces
+- config schema changes
+
+If detected → suggest ! + footer
+Ask user confirmation: "这看起来是 breaking change，确认吗？"
+```
+
+#### Body (Optional)
+
+**When to include**:
+- Complex features (>3 files)
+- Important fixes (security, data loss)
+- Breaking changes
+- Multi-step implementation
+
+**Format**:
+```
+- What was changed and why
+- Bullet points with "-"
+- Max 72 chars per line
+- Don't explain "how"
+```
+
+**Example**:
+```
+feat(auth): add JWT token authentication
+
+- Implement JWT generation and validation
+- Add login/logout endpoints
+- Store tokens in httpOnly cookies
+- Support token refresh mechanism
+
+Closes #123
+```
+
+#### Footer (Optional)
+
+**Issue references**:
+```
+Closes #123
+Fixes #456
+Refs #789
+```
+
+**Breaking changes**:
+```
+BREAKING CHANGE: API now uses camelCase instead of snake_case.
+Migration guide: docs/migration.md
+```
+
+**Co-authored-by** (if using Claude Code):
+```
+Co-authored-by: Claude Sonnet 4.5 <noreply@anthropic.com>
+```
+
+#### Quality Validation
+
+**Hard validation (must pass)**:
+
+✅ **Format check**: Matches `<type>(<scope>): <subject>` or `<type>: <subject>`
+✅ **Type valid**: Type in allowed list (feat/fix/docs/etc.)
+✅ **Subject length**: ≤ 50 characters
+✅ **No period**: Subject doesn't end with `.`
+
+**Soft validation (warnings)**:
+
+⚠️ **Scope relevance**: Scope matches changed files
+⚠️ **Body needed**: Suggest body for complex changes (>3 files, user-facing)
+⚠️ **Clarity**: Subject is clear and specific
+
+**Validation flow**:
+```
+1. Check hard validations
+   Fail → Show error, suggest fixes, retry generation
+
+2. Check soft validations
+   Warn → Show suggestions, allow user to accept or regenerate
+
+3. Show final score
+   ✅ All checks passed
+   ⚠️  Passed with warnings
+```
+
+### Step 6: Execute Commit
+
+#### Single Commit
+
+```bash
+git commit -m "<message>"
+```
+
+#### Multiple Commits (Split)
+
+**SAFE approach - Use `--only` to preserve other staged files**:
+
+```bash
+# Commit 1: Only specific files, keep others staged
+git commit --only path1 path2 path3 -m "message-1"
+
+# Commit 2: Next set of files
+git commit --only path4 path5 -m "message-2"
+
+# Verify all staged are committed
 git diff --cached --quiet
 ```
 
-If no staged changes:
-```
-❌ 没有已 staged 的变更
-请先使用: git add <files>
-```
-
-### Step 2: Analyze Changes
-
-Get staged file info:
+**ALTERNATIVE - Using `restore --staged`** (more explicit):
 
 ```bash
-# File list with status
+# Commit 1: Exclude some files
+git restore --staged -- path4 path5
+git commit -m "message-1"
+
+# Commit 2: Commit the rest
+git commit -m "message-2"
+```
+
+**NEVER use粗暴的 `git reset`** - it destroys all staged state
+
+#### Same File, Different Commits (Hunk-Level Split)
+
+If same file needs different commits:
+
+```
+⚠️  检测到文件 {file} 包含多个意图的变更
+
+建议手动交互式拆分:
+
+方法 1: 按块撤出
+  git reset -p <file>
+  # 选择要撤出的 hunk
+
+方法 2: 按块添加
+  git add -p <file>
+  # 先提交部分，再添加剩余
+
+是否现在进行交互式拆分？
+1. 是，指导我操作
+2. 否，合并为单个提交
+```
+
+#### Dry-Run Mode
+
+If `--dry-run` flag present:
+
+```
+🔍 Dry-Run Mode - 不会实际执行提交
+
+=== 计划的提交 ===
+
+Commit 1: {type}({scope}): {subject}
+  文件: {files}
+  Message:
+    {full_message}
+
+  将执行: git commit --only {files} -m "{message}"
+
+=== 敏感信息检测 ===
+{detection_results}
+
+=== 拆分建议 ===
+{split_suggestion}
+
+=== 质量检查 ===
+{validation_results}
+
+选项:
+1. 确认执行
+2. 调整方案
+3. 取消
+```
+
+#### Verification
+
+After each commit:
+
+```bash
+# Show last commit
+git log -1 --stat
+
+# Check remaining staged
 git diff --cached --name-status
-
-# Detailed changes
-git diff --cached
 ```
 
-For each file, identify:
-- **Status**: added (A), modified (M), deleted (D), renamed (R)
-- **Module**: backend, frontend, docs, test, config, etc.
-- **Language**: .java, .py, .ts, .js, .md, etc.
+### Step 7: Report Result
 
-### Step 3: Detect Sensitive Information
-
-Search for sensitive patterns in staged files:
-
-**API Keys**: `sk-xxx`, `AIzaxxx`, `ghp_xxx`, `gho_xxx`, `ghu_xxx`, `glpat-xxx`
-**Tokens**: `token:`, `"token":`, bearer, JWT (`xxx.xxx.xxx`)
-**Passwords**: `password:`, `passwd:`, `pwd:`
-**Secrets**: `secret:`, `private_key`
-**Files**: `.env`, `.pem`, `.key`, `.crt`
-
-Use Grep to search patterns, Read to verify.
-
-If found, warn user and ask confirmation via AskUserQuestion:
+**Success (single commit)**:
 ```
-⚠️  检测到敏感信息
-是否继续？
-1. 继续
-2. 取消
+✅ 提交成功!
+
+Commit: abc1234
+  feat(auth): add user login functionality
+
+  - Implement JWT authentication
+  - Add login form component
+  - Integrate with backend API
+
+变更文件: 3
+  + backend/service/AuthService.java
+  + backend/controller/AuthController.java
+  + frontend/src/components/LoginForm.tsx
 ```
 
-### Step 4: Plan Commits
-
-**Analyze module distribution**:
-
-Count files per module. Determine if split needed:
-
-**Split when**:
-- 3+ different modules
-- Mixed feat + fix changes
-- Mixed refactor + feat
-- Docs + code changes
-
-**Single commit when**:
-- Single module with related changes
-- Simple bug fix
-- Small feature (< 5 files)
-
-If splitting, AskUserQuestion with proposal:
+**Success (multiple commits)**:
 ```
-建议拆分为 {n} 个提交:
-1. {type}({scope}): {subject}
-2. {type}({scope}): {subject}
+✅ 成功提交 3 个 commit!
+
+Commit 1: abc1234
+  feat(auth): implement login feature
+  Files: 4
+
+Commit 2: def5678
+  docs: update API documentation
+  Files: 2
+
+Commit 3: ghi9012
+  test(auth): add authentication tests
+  Files: 3
+```
+
+**Failure with remediation**:
+```
+❌ 提交失败: {error}
+
+可能原因:
+1. Git 未配置
+   解决: git config --global user.name "Your Name"
+          git config --global user.email "your@email.com"
+
+2. Pre-commit hook 失败
+   错误: {hook_error}
+   解决: 修复问题或使用 git commit --no-verify
+
+3. 权限问题
+   解决: 检查仓库权限
+
+4. 合并冲突
+   解决: 先解决冲突，再提交
+
+当前状态:
+  - Staged 文件: {n}
+  - 可使用 git status 查看
+```
+
+## Configuration
+
+Project-level config file: `.git-commit-agent.yml`
+
+```yaml
+# Commit 规范（固定使用 Vue.js）
+convention: vuejs
+
+# 语言策略
+message_language: follow_user  # follow_user | en | zh
+
+# 拆分策略
+split_strategy:
+  enabled: true
+  # 同一意图内，按模块拆分的阈值
+  max_modules_per_intent: 3
+  # 文件数阈值（太大了建议拆）
+  max_files_per_commit: 10
+  # 是否检查依赖关系
+  check_dependencies: true
+
+# 模块映射（覆盖默认规则）
+module_map:
+  backend: ["backend/", "server/", "api/", "src/main/"]
+  frontend: ["frontend/", "web/", "ui/", "client/"]
+  docs: ["docs/", "*.md"]
+  test: ["tests/", "test/", "__tests__/", "*_test.go"]
+  ci: [".github/", ".gitlab/"]
+  scripts: ["scripts/", "tools/", "bin/"]
+  config: ["config/", "*.yml", "*.yaml"]
+
+# 敏感信息检测
+sensitive_detection:
+  enabled: true
+  # 强规则：默认阻断
+  strong_patterns:
+    - AWS Keys: "AKIA[0-9A-Z]{16}"
+    - PEM blocks: "-----BEGIN.*PRIVATE KEY-----"
+    - GitHub tokens: "ghp_[a-zA-Z0-9]{36}"
+    - GitLab tokens: "glpat-[a-zA-Z0-9]{20}"
+    - Slack tokens: "xox[bap]-[a-zA-Z0-9-]{10,}"
+  # 弱规则：询问确认
+  weak_patterns:
+    - Long base64: "[A-Za-z0-9+/]{20,}={0,2}"
+    - URLs: "(DATABASE_URL|REDIS_URL|MONGODB_URI|postgresql://|mysql://)"
+    - Authorization: "Authorization: Bearer [a-zA-Z0-9]{20,}"
+  # Allowlist（跳过检测）
+  allowlist:
+    - "example"
+    - "test"
+    - "dummy"
+    - "placeholder"
+    - "xxxx"
+    - "YOUR_"
+    - "<your>"
+
+# 质量标准
+quality:
+  # 强制检查
+  hard_validation:
+    - format: true
+    - type_valid: true
+    - subject_max_length: 50
+    - no_period: true
+  # 软建议
+  soft_validation:
+    - suggest_body_for_complex: true  # >3 files
+    - suggest_body_for_user_facing: true
+    - scope_relevance: true
+
+# Preflight 检查（可选）
+preflight_checks:
+  enabled: false
+  commands:
+    - "npm run lint"
+    - "pytest -x"  # 第一个失败就停止
+  # 超时（秒）
+  timeout: 30
+```
+
+**Load order**: `.git-commit-agent.yml` → if not found, use defaults
+
+## Examples
+
+### Example 1: Simple Feature (Single Commit)
+
+**User**: `/commit 添加了用户登录功能`
+
+**Staged files**:
+```
+A backend/service/AuthService.java
+A backend/controller/AuthController.java
+A frontend/src/components/LoginForm.tsx
+```
+
+**Analysis**:
+- All new files (A)
+- 2 modules: backend, frontend
+- Same intent: feat (new feature)
+- Related implementation → single commit
+
+**Result**:
+```
+✅ 检测到 3 个 staged 文件
+✅ 未检测到敏感信息
+✅ 单个意图（feat）跨越相关模块 → 单个提交
+
+feat(auth): add user login functionality
+
+- Implement JWT authentication service
+- Add login API endpoints
+- Create login form component
+- Integrate frontend with backend
+
+执行: git commit -m "..."
+✅ 提交成功: abc1234
+```
+
+### Example 2: Multi-Intent Split
+
+**User**: `/commit 修复了 bug 并更新了文档`
+
+**Staged files**:
+```
+M backend/service/UserService.java
+M docs/api.md
+M README.md
+```
+
+**Analysis**:
+- 3 files, 3 modules
+- Two intents: fix (UserService), docs (api.md, README.md)
+- Should split by intent
+
+**Ask user**:
+```
+建议拆分为 2 个提交:
+
+Commit 1: fix(backend): resolve null pointer in UserService
+  文件: backend/service/UserService.java
+  意图: fix
+
+Commit 2: docs: update API documentation
+  文件: docs/api.md, README.md
+  意图: docs
+
+拆分原因: 不同意图（修复 bug + 文档）
 
 选项:
 1. 确认拆分
@@ -103,205 +872,260 @@ If splitting, AskUserQuestion with proposal:
 3. 自定义
 ```
 
-### Step 5: Generate Commit Message
+### Example 3: Breaking Change
 
-Use Vue.js Commit Convention (format in [CONVENTIONS.md](references/CONVENTIONS.md)):
+**User**: `/commit 修改了用户 API 接口`
 
+**Diff shows**:
 ```
-<type>(<scope>): <subject>
-
-<body>
+- public User getUser(String id)
++ public UserDTO getUser(String id)
 ```
-
-**Type Selection**:
-
-| Condition | Type |
-|-----------|------|
-| User says "修复/fix/bug" | `fix` |
-| User says "重构/refactor" | `refactor` |
-| Only .md/.txt files | `docs` |
-| Test files only | `test` |
-| New files added | `feat` |
-| Default | `chore` |
-
-**Scope Selection**:
-- Single module → use module name
-- Multi modules (single commit) → omit or use most relevant
-- Multi modules (split) → each commit uses its module
-
-**Subject Rules**:
-- Imperative mood: "add" not "added"
-- Lowercase first letter
-- Max 50 characters
-- No period at end
-
-**Extract from user context**:
-```
-"添加了用户登录功能" → "add user login feature"
-"修复 API 认证 bug" → "fix API authentication bug"
-```
-
-**Body** (optional):
-- Use for complex features, important fixes, breaking changes
-- List format with `-` prefix
-- Explain "what" and "why", not "how"
-
-**Footer** (optional):
-```
-Closes #123
-Fixes #456
-
-BREAKING CHANGE: API now uses camelCase
-```
-
-**Quality Score** (0-100):
-- Format: 20%
-- Clarity: 25%
-- Completeness: 20%
-- Scope: 20%
-- History: 15%
-
-If score < 70, improve before committing.
-
-### Step 6: Execute Commit
-
-**Single commit**:
-```bash
-git commit -m "<message>"
-```
-
-**Multiple commits** (split):
-
-```bash
-# For each commit
-git reset
-git add <files-for-commit-1>
-git commit -m "<message-1>"
-
-git add <files-for-commit-2>
-git commit -m "<message-2>"
-```
-
-**Verify**:
-```bash
-git log -1 --stat
-git diff --cached --quiet  # Should be empty
-```
-
-### Step 7: Report Result
-
-**Success**:
-```
-✅ 成功提交 {n} 个 commit!
-
-Commit 1: {hash}
-  {type}({scope}): {subject}
-```
-
-**Failure**:
-```
-❌ 提交失败: {error}
-
-可能原因:
-1. Git 未配置: git config --global user.name "Your Name"
-2. Pre-commit hook 失败
-3. 权限问题
-```
-
-## Examples
-
-### Example 1: Simple Feature
-
-**User**: `/commit 添加了用户登录功能`
-
-**Files**: `AuthService.java`, `AuthController.java`, `LoginForm.tsx`
 
 **Analysis**:
-- 3 files, 2 modules (backend, frontend)
-- Related feature → single commit
+- Public API signature changed
+- Breaking change detected
 
-**Result**:
+**Suggested message**:
 ```
-feat(auth): add user login functionality
+feat(api)!: change getUser return type to UserDTO
 
-- Implement JWT authentication
-- Add login form component
-- Integrate with backend API
-```
+BREAKING CHANGE: UserAPI.getUser() now returns UserDTO
+instead of User. All callers must update to use
+UserDTO methods.
 
-### Example 2: Multi-Module Split
-
-**User**: `/commit 修复后端 API 并更新文档`
-
-**Files**: `UserService.java`, `api.md`, `README.md`
-
-**Analysis**:
-- 3 files, 3 modules → suggest split
-
-**Ask user**:
-```
-建议拆分为 2 个提交:
-1. fix(backend): correct user service API
-2. docs: update API documentation
-
-选项:
-1. 确认拆分
-2. 合并为单个
+⚠️  检测到 breaking change，确认标记吗？
+1. 确认
+2. 不是 breaking change
 ```
 
-### Example 3: Sensitive Data
+### Example 4: Sensitive Data Detected
 
 **User**: `/commit 添加配置文件`
 
-**Files**: `config/app.env` with `API_KEY=sk-xxx`
-
-**Detect**: Warn user, ask confirmation.
-
-## Configuration
-
-Project-level config file: `.git-commit-agent.yml`
-
-```yaml
-convention: vuejs  # vuejs | conventional
-
-split_strategy:
-  enabled: true
-  max_modules_per_commit: 3
-
-sensitive_detection:
-  enabled: true
-
-quality:
-  min_score: 70
+**Staged**:
+```
+A config/app.env
 ```
 
-Load if exists to customize behavior.
+**Diff (`git diff --cached -U0`)**:
+```
++API_KEY=sk-ant-api03-...
++DATABASE_URL=postgresql://...
+```
+
+**Detection**:
+```
+🚨 强规则命中 - 检测到敏感信息！
+
+文件: config/app.env:1
+  API_KEY=sk-ant-api03-...
+
+⚠️  这是高置信度的敏感信息，默认阻止提交
+
+处理建议:
+1. 撤回 staged: git restore --staged config/app.env
+2. 替换为环境变量: export API_KEY=$API_KEY
+3. 添加到 .gitignore: echo "*.env" >> .gitignore
+
+选项:
+1. 强制继续（不推荐）
+2. 取消提交并查看建议
+```
+
+### Example 5: Dry-Run Mode
+
+**User**: `/commit --dry-run 添加了支付功能`
+
+**Output**:
+```
+🔍 Dry-Run Mode - 不会实际执行提交
+
+=== 变更分析 ===
+Staged 文件: 5
+  + backend/service/PaymentService.java
+  + backend/controller/PaymentController.java
+  + frontend/src/components/PaymentForm.tsx
+  + docs/payment-api.md
+  + config/payment.yml
+
+=== 敏感信息检测 ===
+✅ 未检测到敏感信息
+
+=== 拆分建议 ===
+建议拆分为 2 个提交:
+
+Commit 1: feat(payment): implement payment functionality
+  文件: 3 (PaymentService.java, PaymentController.java, PaymentForm.tsx)
+  意图: feat
+
+Commit 2: docs(payment): add payment API documentation
+  文件: 2 (payment-api.md, payment.yml)
+  意图: docs
+
+=== 生成的 Commit Messages ===
+
+Commit 1:
+feat(payment): implement payment functionality
+
+- Add payment service with Stripe integration
+- Create payment API endpoints
+- Build payment form component
+- Support credit card and Alipay
+
+Commit 2:
+docs(payment): add payment API documentation
+
+- Document payment endpoints
+- Add integration examples
+- Update configuration reference
+
+=== 质量检查 ===
+✅ Format check passed
+✅ Type valid
+✅ Subject length OK
+✅ No period
+⚠️  建议: 考虑添加 breaking change 说明（如果涉及 API 变更）
+
+=== 将执行的命令 ===
+git commit --only \
+  backend/service/PaymentService.java \
+  backend/controller/PaymentController.java \
+  frontend/src/components/PaymentForm.tsx \
+  -m "feat(payment): implement payment functionality ..."
+
+git commit --only \
+  docs/payment-api.md \
+  config/payment.yml \
+  -m "docs(payment): add payment API documentation ..."
+
+选项:
+1. 确认执行
+2. 调整方案
+3. 取消
+```
+
+## Error Handling
+
+### Not a git repository
+```
+❌ 当前目录不是 Git 仓库
+请先初始化仓库: git init
+```
+
+### Git not configured
+```
+❌ Git 未配置用户信息
+请运行:
+  git config --global user.name "Your Name"
+  git config --global user.email "your@email.com"
+```
+
+### No staged changes
+```
+❌ 没有已 staged 的变更
+请先添加文件:
+  git add <files>
+  或 git add . (添加所有)
+
+提示：使用 git status 查看当前状态
+```
+
+### Merge conflict
+```
+❌ 检测到合并冲突
+请先解决冲突后再提交
+
+冲突文件:
+  - backend/service/UserService.java
+
+使用以下命令解决:
+  git status  # 查看冲突
+  # 编辑文件，解决冲突
+  git add <resolved-files>
+  git commit
+```
+
+### Hook failure
+```
+❌ Pre-commit hook 失败
+
+Hook 错误:
+  {hook_output}
+
+选项:
+1. 修复问题后重试
+2. 使用 --no-verify 跳过 hook（不推荐）
+
+当前状态:
+  - Staged 文件: {n}
+  - 可使用 git diff --cached 查看
+```
+
+## Important Notes
+
+1. **Only commit staged files** - Never auto-add, never modify working directory
+2. **Preserve staged state** - Use `--only` or `restore --staged`, never `git reset`
+3. **Intent-first splitting** - Group by feat/fix/docs, then by module
+4. **Security by default** - Strong patterns block, weak patterns ask
+5. **Dry-run available** - Use `--dry-run` to preview without executing
+6. **Learn project style** - Analyze git log for language/scope patterns
+7. **Dependency awareness** - Don't break atomic changes across commits
 
 ## Resources
 
 ### references/CONVENTIONS.md
 
-Complete commit convention specifications (Vue.js, Conventional Commits), type definitions, scope patterns, and validation rules.
+Complete Vue.js Commit Convention specification with:
+- All commit types (feat/fix/docs/etc.)
+- Scope patterns and examples
+- Validation rules
+- Breaking change guidelines
+- Multi-language examples
 
-Load when generating commit messages or validating format.
+Load when generating messages or validating format.
 
-## Error Handling
+### Fallback behavior
 
-**Not a git repo**: Direct user to run in git repository
+If `references/CONVENTIONS.md` missing:
+- Use built-in Vue.js convention rules
+- Still functional but without detailed examples
+- Warning logged (not blocking)
 
-**No staged changes**: Remind to run `git add` first
+## Advanced Usage
 
-**Git not configured**:
-```bash
-git config --global user.name "Your Name"
-git config --global user.email "your@email.com"
+### Custom commit types
+
+Extend allowed types in config:
+```yaml
+custom_types:
+  - name: "hotfix"
+    description: "紧急生产修复"
+  - name: "release"
+    description: "发布版本"
 ```
 
-**Hook failure**: Show hook error, suggest fixing or using `--no-verify`
+### Override language strategy
 
-## Important Notes
+Temporarily override:
+```
+/commit --lang=en 添加了用户功能
+→ Subject: "add user feature" (force English)
 
-- **Only commit staged files** - Never auto-add files
-- **Ask before splitting** - Always confirm with user
-- **Security first** - Err on side of caution with sensitive data
-- **Learn from history** - Check `git log` for project style patterns
+/commit --lang=zh add user feature
+→ Subject: "添加用户功能" (force Chinese)
+```
+
+### Bypass sensitive detection (not recommended)
+
+```
+/commit --no-sensitive-check
+⚠️  已禁用敏感信息检测（不推荐）
+```
+
+### Verbose mode
+
+```
+/commit --verbose
+显示详细的决策过程和中间结果
+```
