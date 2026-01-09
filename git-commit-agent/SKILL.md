@@ -49,19 +49,200 @@ git diff --cached --name-status --diff-filter=ACDMRT
 - `--diff-filter`: focus on Added/Modified/Deleted/Renamed/Copied/Type-change
 
 **If no staged changes**:
-```
-❌ 没有已 staged 的变更
-提示：使用 git add <files> 添加文件
 
-ℹ️  检测到 {n} 个 unstaged 文件
-是否查看这些文件？(使用 git status)
+First check for common directories that should be ignored:
+
+```bash
+# Check for common ignore directories (from config)
+for dir in node_modules __pycache__ .pytest_cache build dist target .m2 .venv venv coverage .idea .vscode .DS_Store Thumbs.db; do
+  [ -d "$dir" ] || [ -f "$dir" ] && echo "$dir"
+done
+
+# Check if .gitignore exists
+test -f .gitignore && echo "exists" || echo "not found"
+
+# Get list of unstaged files
+git status --porcelain=v1 | grep "^??" | cut -c4-
+```
+
+**If common ignore directories detected**:
+
+Interactive selection using AskUserQuestion:
+
+```
+⚠️  检测到常见应该被忽略的目录/文件:
+
+检测到:
+  [ ] 1. node_modules/ (npm 依赖包)
+  [ ] 2. __pycache__/ (Python 字节码缓存)
+  [ ] 3. build/ (构建输出目录)
+  [ ] 4. .idea/ (JetBrains IDE 配置)
+  ...
+
+建议: 这些通常不应该提交到仓库
+
+选项:
+1. 全部添加到 .gitignore
+2. 选择性添加（交互式选择）
+3. 跳过（我自己处理）
+```
+
+**Option 1: Add all to .gitignore**
+```bash
+# Create or update .gitignore
+cat >> .gitignore << 'EOF'
+
+# Added by git-commit-agent
+node_modules/
+__pycache__/
+.pytest_cache/
+build/
+dist/
+target/
+.m2/
+.venv/
+venv/
+.eggs/
+*.egg-info/
+coverage/
+.tox/
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+EOF
+
+echo "✅ 已添加常见忽略规则到 .gitignore"
+```
+
+**Option 2: Selective add (interactive)**
+
+For each detected directory, ask user:
+```
+是否添加 node_modules/ 到 .gitignore？
+1. 添加
+2. 跳过
+
+是否添加 __pycache__/ 到 .gitignore？
+1. 添加
+2. 跳过
+
+...
+```
+
+Then append only selected items to .gitignore:
+```bash
+cat >> .gitignore << 'EOF'
+
+# Added by git-commit-agent (user selected)
+node_modules/
+__pycache__/
+coverage/
+EOF
+```
+
+**After .gitignore update, check for unstaged files again**:
+```bash
+# Files still unstaged (after .gitignore applied)
+git status --porcelain=v1 | grep "^??" | cut -c4-
+```
+
+**Now add all changes**:
+
+If `auto_add.enabled: true` and user confirms:
+```bash
+# Add all unstaged changes (respecting .gitignore)
+git add .
+
+# Show what was staged
+echo "✅ 已添加所有变更到暂存区"
+git status --short --staged
+```
+
+**If user prefers manual control**:
+```
+ℹ️  检测到以下文件可以添加:
+
+{list of unstaged files}
+
+提示: 使用以下命令精确控制
+  git add <file>     # 添加特定文件
+  git add *.py       # 添加所有 .py 文件
+  git add .          # 添加所有文件（已应用 .gitignore）
+
+是否现在添加所有文件？
+1. 是，添加所有
+2. 否，让我手动选择
 ```
 
 **If both staged and unstaged exist**:
+
+First check total file count:
+```bash
+# Count staged files
+staged_count=$(git diff --cached --name-only | wc -l)
+
+# Count unstaged files
+unstaged_count=$(git status --porcelain=v1 | grep "^??" | wc -l)
+
+# Total changes
+total_count=$((staged_count + unstaged_count))
+```
+
+**If total changes > 100**:
+```
+⚠️  检测到大量文件变更: {total_count} 个文件
+
+这可能意味着:
+  - 忘记配置 .gitignore
+  - 依赖包目录（node_modules, vendor, etc.）未被忽略
+  - 构建产物未被忽略
+
+建议检查:
+
+1. 查看是否有常见应该忽略的目录
+2. 检查 .gitignore 是否配置正确
+
+是否现在检查并更新 .gitignore？
+1. 是，检查并建议
+2. 否，继续提交
+```
+
+If user chooses to check:
+```bash
+# Run same detection as "no staged" case
+# Show detected directories
+# Offer to add to .gitignore
+```
+
+**Then ask user preference**:
 ```
 ✅ 检测到 {n} 个 staged 文件
 ⚠️  还有 {m} 个 unstaged 文件未添加
-提示：只会提交已 staged 的变更
+
+Unstaged 文件:
+  {list (or summary if too many)}
+
+选项:
+1. 只提交已 staged 的文件
+2. 添加所有 unstaged 文件然后一起提交
+3. 取消，让我手动选择
+```
+
+**Detailed flow for option 2 (add unstaged)**:
+
+```bash
+# First check for ignore dirs (same as above)
+# Update .gitignore if needed
+
+# Then add all
+git add .
+
+# Show result
+echo "✅ 已添加所有文件，现在总计 {n} 个 staged 文件"
+git status --short
 ```
 
 ### Step 2: Analyze Staged Changes
@@ -725,6 +906,36 @@ Project-level config file: `.git-commit-agent.yml`
 ```yaml
 # Commit 规范（固定使用 Vue.js）
 convention: vuejs
+
+# 自动添加策略
+auto_add:
+  enabled: true  # 当没有 staged 时自动 git add .
+  ask_before_add: true  # 添加前询问用户
+  # 检测并建议添加到 .gitignore 的目录
+  detect_ignore_dirs: true
+  # 当总变更数超过此阈值时，提示检查 .gitignore
+  many_files_threshold: 100
+  # 常见应该忽略的目录（可自定义）
+  common_ignore_dirs:
+    - node_modules      # npm 依赖
+    - __pycache__       # Python 缓存
+    - .pytest_cache     # pytest 缓存
+    - build             # 构建输出
+    - dist              # 分发目录
+    - target            # Maven 构建
+    - .m2               # Maven 本地仓库
+    - .venv             # Python 虚拟环境
+    - venv              # Python 虚拟环境
+    - .eggs             # Python eggs
+    - *.egg-info        # Python egg 信息
+    - coverage          # 覆盖率报告
+    - .tox              # tox 测试环境
+    - .idea             # JetBrains IDE
+    - .vscode           # VS Code
+    - *.swp             # Vim 临时文件
+    - *.swo             # Vim 临时文件
+    - .DS_Store         # macOS
+    - Thumbs.db         # Windows
 
 # 语言策略
 message_language: follow_user  # follow_user | en | zh
