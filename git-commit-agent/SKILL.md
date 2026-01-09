@@ -225,6 +225,41 @@ done
 - 应用层 + 配置层（有依赖）→ 合并
 - 基础设施层 + 配置层（独立）→ 拆分
 
+**IMPORTANT**: When detecting multiple layers without strong dependencies, **MUST ask user to confirm split**:
+
+```
+⚠️  检测到多个层面的变更
+
+应用层 (2 个文件):
+  - backend/.../CommandExecutionService.java
+  - backend/.../CommandExecutionService.java
+
+基础设施层 (5 个文件):
+  - backend/.dockerignore, backend/Dockerfile
+  - frontend/.dockerignore, frontend/Dockerfile
+  - docker-compose.yml
+
+建议: 按层面拆分为 2 个提交
+
+Commit 1: refactor(service) - 应用层
+  Add logCommand parameter for flexible logging control
+  Files: 2
+
+Commit 2: refactor(docker) - 基础设施层
+  Move health check to docker-compose.yml
+  Files: 5
+
+选项:
+1. 确认拆分 - 执行上述 2 个提交
+2. 合并为单个 - 所有变更合并为 1 个提交
+3. 自定义方案
+```
+
+**User selection handling**:
+- If user selects "1" or "确认拆分" → Execute Step 6 with split commits
+- If user selects "2" or "合并" → Execute Step 6 with single commit
+- If user selects "3" → Ask for custom split plan
+
 **Decision tree**:
 ```
 1. 按意图分组:
