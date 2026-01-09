@@ -53,9 +53,11 @@ Error: Bash command failed for pattern "!` after type/scope if breaking change d
 ```
 
 **解决方案**:
-1. 在 SKILL.md 中直接使用 `!` 而非 `` `!` ``
+```
+1. 在 SKILL.md 中直接使用 ! 而非 `!`
 2. 不使用 `set +H`（用户选择的方式）
 3. 使用单引号包裹 commit message
+```
 
 **相关文档**:
 - BASH_ESCAPE_FIX.md 已删除（内容整合到 SKILL.md）
