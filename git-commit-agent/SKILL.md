@@ -443,18 +443,168 @@ Within each intent group, consider splitting by module:
 - Different features (even within same module)
 - Docs + code (unless docs are integral)
 
-**Decision tree**:
+**Change layer awareness** (NEW - 代码 vs 配置):
+
+**检测变更层面**:
+
+```bash
+# 分析文件类型层面
+for file in $(git diff --cached --name-only); do
+  if [[ "$file" =~ \.(java|py|ts|js|go|rs|c|cpp|h|cs)$ ]]; then
+    echo "application: $file"
+  elif [[ "$file" =~ (Dockerfile|docker-compose|\.gitignore|\.dockerignore)$ ]]; then
+    echo "infrastructure: $file"
+  elif [[ "$file" =~ (\.yml|\.yaml|\.toml|\.json|config/)$ ]]; then
+    echo "config: $file"
+  elif [[ "$file" =~ \.(md|txt|rst)$ ]]; then
+    echo "docs: $file"
+  else
+    echo "other: $file"
+  fi
+done
+```
+
+**层面定义**:
+
+1. **应用层** (Application Layer)
+   - 源代码: `.java`, `.py`, `.ts`, `.js`, `.go`, `.rs`, `.c`, `.cpp`, `.h`, `.cs`
+   - 业务逻辑、API 实现、数据处理
+   - 变更性质: 功能实现、bug 修复、代码重构
+
+2. **基础设施层** (Infrastructure Layer)
+   - Docker: `Dockerfile`, `docker-compose.yml`, `.dockerignore`
+   - CI/CD: `.github/`, `.gitlab-ci.yml`
+   - 构建: `pom.xml`, `package.json`, `build.gradle`
+   - 变更性质: 部署配置、构建配置、环境配置
+
+3. **配置层** (Configuration Layer)
+   - 应用配置: `config/`, `*.yml`, `*.yaml`, `*.toml`, `*.json`
+   - 环境变量: `.env.example`
+   - 变更性质: 配置参数调整
+
+4. **文档层** (Documentation Layer)
+   - 文档: `*.md`, `*.txt`, `*.rst`, `docs/`
+   - 变更性质: 文档更新
+
+**按层面拆分规则**:
+
+```
+原则: 如果同时有多个层面的变更，且没有强依赖，则按层面拆分
+
+**场景 1: 应用层 + 基础设施层** (通常应该拆分)
+
+应用层变更:
+  - CommandExecutionService.java (新增 logCommand 参数)
+
+基础设施层变更:
+  - Dockerfile, docker-compose.yml, .dockerignore
+
+判断:
+  ✅ 应用层可以独立运行（不需要新的 Docker 配置）
+  ✅ 基础设施层可以独立存在（Docker 配置调整）
+
+建议拆分:
+  1. refactor(service): add logCommand parameter for flexible logging
+  2. refactor(docker): optimize health check configuration
+
+**场景 2: 应用层 + 配置层** (需要检查依赖)
+
+应用层变更:
+  - UserService.java (新增数据库连接配置)
+
+配置层变更:
+  - application.yml (添加数据库连接字符串)
+
+判断:
+  ⚠️  配置层变更依赖应用层代码
+  ❌ 代码需要新配置才能运行
+
+建议合并:
+  1. feat(user): add database connection with configuration
+
+**场景 3: 基础设施层 + 配置层** (通常可以拆分)
+
+基础设施层变更:
+  - Dockerfile (更新基础镜像)
+
+配置层变更:
+  - application.yml (调整日志级别)
+
+判断:
+  ✅ 两者独立
+
+建议拆分:
+  1. refactor(docker): upgrade base image to node:18
+  2. chore(config): adjust log level to WARN
+```
+
+**检测依赖关系**:
+
+```bash
+# 检查应用层变更是否依赖配置
+# 1. 扫描代码中的新增配置项
+git diff --cached | grep -E '(@Value|@Property|Configuration|getConfig|getenv)'
+
+# 2. 检查是否有对应配置文件变更
+git diff --cached --name-only | grep -E '(\.yml|\.yaml|\.properties|\.env)'
+
+# 如果代码引用新配置，但配置文件没有变更 → 提示用户
+# 如果代码和配置都变更 → 合并
+```
+
+**决策树（更新版）**:
 ```
 1. 按意图 (intent) 分组:
-   ├─ 相同意图 → 检查依赖关系
-   │  ├─ 有依赖 → 合并
-   │  └─ 无依赖 → 可拆分
-   └─ 不同意图 → 必须拆分
+   ├─ 不同意图 → 必须拆分
 
 2. 每个意图组内:
-   ├─ 单模块 → 单个 commit
-   ├─ 多模块相关 → 合并
-   └─ 多模块不相关 → 拆分
+   ├─ 检查变更层面
+   │  ├─ 单一层面 → 继续判断
+   │  ├─ 多个层面 → 检查依赖
+   │  │  ├─ 有依赖 → 合并
+   │  │  └─ 无依赖 → 按层面拆分
+   │
+   ├─ 检查模块
+   │  ├─ 单模块 → 单个 commit
+   │  ├─ 多模块相关 → 合并
+   │  └─ 多模块不相关 → 拆分
+```
+
+**Example: 用户场景**:
+
+```
+Files:
+- backend/.../CommandExecutionService.java (应用层)
+- backend/Dockerfile (基础设施层)
+- frontend/Dockerfile (基础设施层)
+- docker-compose.yml (基础设施层)
+- backend/.dockerignore (基础设施层)
+- frontend/.dockerignore (基础设施层)
+
+Analysis:
+- Intent: refactor (相同)
+- Layers: 应用层 (1 个文件) + 基础设施层 (5 个文件)
+- Dependency:
+  ✅ 应用层新增 logCommand 功能独立
+  ✅ Docker 配置优化独立
+  ✅ 没有强依赖关系
+
+Decision: 按层面拆分
+
+Plan:
+Commit 1: refactor(service): add logCommand parameter for flexible logging
+  Files: CommandExecutionService.java (2 个文件)
+
+  - Add logCommand parameter to executeLocal()
+  - Support INFO and DEBUG logging levels
+  - Apply DEBUG level for health checks
+
+Commit 2: refactor(docker): optimize health check configuration
+  Files: Dockerfile, docker-compose.yml, .dockerignore (5 个文件)
+
+  - Move health check from Dockerfile to docker-compose.yml
+  - Add Dockerfile to .dockerignore
+  - Unify health check management
 ```
 
 **Example scenarios**:
@@ -507,6 +657,51 @@ Plan:
 
    BREAKING CHANGE: UserAPI.getUser() now returns UserDTO
    instead of Map. Frontend updated accordingly.
+```
+
+**Scenario 4: Application + Infrastructure layers (SPLIT by layer)**:
+
+```
+Files:
+- backend/.../CommandExecutionService.java (应用层)
+- backend/Dockerfile (基础设施层)
+- frontend/Dockerfile (基础设施层)
+- docker-compose.yml (基础设施层)
+- backend/.dockerignore (基础设施层)
+- frontend/.dockerignore (基础设施层)
+
+Analysis:
+- Intent: refactor (相同)
+- Layers: 应用层 + 基础设施层
+- Dependency:
+  ✅ 应用层功能独立（logCommand 参数不依赖 Docker 配置）
+  ✅ 基础设施层变更独立（Docker 配置优化不依赖代码）
+  ✅ 可以独立运行和测试
+
+Decision: 按层面拆分
+
+Plan:
+Commit 1: refactor(service): add logCommand parameter for flexible logging
+  Files: CommandExecutionService.java (2 个文件)
+  Layer: 应用层
+
+  - Add logCommand parameter to executeLocal()
+  - Support INFO and DEBUG logging levels
+  - Apply DEBUG level for health checks to reduce log noise
+
+Commit 2: refactor(docker): optimize health check configuration
+  Files: Dockerfile, docker-compose.yml, .dockerignore (5 个文件)
+  Layer: 基础设施层
+
+  - Move health check from Dockerfile to docker-compose.yml
+  - Add Dockerfile to .dockerignore to avoid accidental copies
+  - Unify health check management across services
+
+💡 拆分原因:
+- 应用层和基础设施层变更独立
+- 代码功能可以独立测试
+- Docker 配置调整不影响应用逻辑
+- 更清晰的提交历史
 ```
 
 **Ask user confirmation**:
