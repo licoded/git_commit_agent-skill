@@ -35,9 +35,6 @@ git add <files>
 **Check environment**:
 
 ```bash
-# Disable bash history expansion to avoid issues with '!' in commit messages
-set +H
-
 # Verify git repository
 git rev-parse --is-inside-work-tree
 
@@ -312,8 +309,6 @@ Use configured `module_map` (see [references/CONFIGURATION.md](references/CONFIG
 
 #### Breaking Change Detection
 
-**IMPORTANT**: The `!` character in breaking changes can trigger bash history expansion. Always ensure `set +H` is executed before running git commits with `!` to avoid parsing errors.
-
 **Breaking indicators**:
 - Deleted/renamed public API
 - Changed method signature
@@ -336,7 +331,7 @@ Scan diff for:
 - deleted exports/interfaces
 - config schema changes
 
-If detected → suggest `!` + footer
+If detected → suggest ! + footer
 Ask user confirmation: "这看起来是 breaking change，确认吗？"
 
 #### Body (Optional)
@@ -393,8 +388,6 @@ Co-authored-by: Claude Sonnet 4.5 <noreply@anthropic.com>
 ---
 
 ### Step 6: Execute Commit
-
-**Pre-execution check**: Ensure bash history expansion is disabled (`set +H`) to handle breaking changes with `!` character.
 
 #### Single Commit
 
