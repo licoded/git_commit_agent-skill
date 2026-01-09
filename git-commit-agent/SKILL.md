@@ -62,29 +62,29 @@ git status --short | grep -E "node_modules|__pycache__|\.pytest_cache|build|dist
 total_files=$(git status --short | wc -l)
 ```
 
-If `many_files_threshold` exceeded (default: 100):
+If `many_files_threshold` exceeded (default: 100), **use AskUserQuestion**:
 
+```yaml
+questions:
+  - question: 检测到 ${total_files} 个文件变更，可能包含应该被忽略的文件（如 node_modules）。是否继续？
+    header: 大量变更警告
+    multiSelect: false
+    options:
+      - label: 继续自动添加
+        description: 执行 git add . 添加所有变更
+      - label: 先查看文件列表
+        description: 显示所有变更文件，再决定是否添加
+      - label: 手动选择文件
+        description: 手动指定要添加的文件
+      - label: 取消提交
+        description: 取消本次提交操作
 ```
-⚠️  检测到 ${total_files} 个文件变更
 
-可能原因:
-- 忘记 .gitignore
-- node_modules 或依赖目录未被忽略
-
-检查以下目录是否应该被忽略:
-- node_modules
-- __pycache__
-- build/
-- dist/
-- target/
-- .m2/
-- .venv/
-
-选项:
-1. 继续自动 git add .
-2. 手动选择文件
-3. 先查看文件列表
-```
+**User selection handling**:
+- **继续自动添加** → Execute `git add .`
+- **先查看文件列表** → Show `git status --short`, then ask again
+- **手动选择文件** → Prompt user for specific files
+- **取消提交** → Stop workflow
 
 **Auto-add (if enabled and user confirms)**:
 
@@ -137,25 +137,33 @@ git diff --cached --name-only | cut -d'/' -f1 | sort | uniq -c
 example, test, dummy, placeholder, xxxx, YOUR_, <your>
 ```
 
-**If sensitive data detected**:
+**If sensitive data detected**, **use AskUserQuestion**:
 
 ```
 🚨 强规则命中 - 检测到敏感信息！
 
 文件: config/app.env:3
   AKIAIOSFODNN7EXAMPLE
-
-处理建议:
-1. 撤回 staged: git restore --staged <file>
-2. 替换为环境变量
-3. 添加到 .gitignore
-4. 如果是测试数据: 添加到 allowlist
-
-选项:
-1. 强制继续（不推荐）
-2. 取消提交
-3. 查看详细上下文
 ```
+
+```yaml
+questions:
+  - question: 检测到可能的敏感信息，如何处理？
+    header: 安全警告
+    multiSelect: false
+    options:
+      - label: 取消提交（推荐）
+        description: 阻止提交，先修复敏感信息问题
+      - label: 查看上下文
+        description: 显示敏感信息前后的代码上下文
+      - label: 强制继续
+        description: 忽略警告，继续提交（风险自负）
+```
+
+**User selection handling**:
+- **取消提交** → Stop workflow, provide remediation steps
+- **查看上下文** → Show ±3 lines around sensitive data
+- **强制继续** → Add warning to commit message, proceed
 
 **For detailed rules**: See [references/SENSITIVE_RULES.md](references/SENSITIVE_RULES.md)
 
@@ -225,10 +233,10 @@ done
 - 应用层 + 配置层（有依赖）→ 合并
 - 基础设施层 + 配置层（独立）→ 拆分
 
-**IMPORTANT**: When detecting multiple layers without strong dependencies, **MUST ask user to confirm split**:
+**IMPORTANT**: When detecting multiple layers without strong dependencies, **MUST use AskUserQuestion to ask user**:
 
 ```
-⚠️  检测到多个层面的变更
+⚠️  检测到多个层面的变更，建议按层面拆分
 
 应用层 (2 个文件):
   - backend/.../CommandExecutionService.java
@@ -239,26 +247,59 @@ done
   - frontend/.dockerignore, frontend/Dockerfile
   - docker-compose.yml
 
-建议: 按层面拆分为 2 个提交
+拆分方案:
 
-Commit 1: refactor(service) - 应用层
+Commit 1: refactor(service) - 应用层变更
   Add logCommand parameter for flexible logging control
-  Files: 2
 
-Commit 2: refactor(docker) - 基础设施层
-  Move health check to docker-compose.yml
-  Files: 5
+Commit 2: refactor(docker) - 基础设施层变更
+  Move health check from Dockerfile to docker-compose.yml
+```
 
-选项:
-1. 确认拆分 - 执行上述 2 个提交
-2. 合并为单个 - 所有变更合并为 1 个提交
-3. 自定义方案
+**Use AskUserQuestion**:
+
+```yaml
+questions:
+  - question: 检测到应用层和基础设施层混合变更，如何提交？
+    header: 拆分决策
+    multiSelect: false
+    options:
+      - label: 按层面拆分（推荐）
+        description: 拆分为 2 个提交：先应用层，后基础设施层
+      - label: 合并为单个
+        description: 所有变更合并为 1 个提交
+      - label: 自定义方案
+        description: 手动指定如何拆分
 ```
 
 **User selection handling**:
-- If user selects "1" or "确认拆分" → Execute Step 6 with split commits
-- If user selects "2" or "合并" → Execute Step 6 with single commit
-- If user selects "3" → Ask for custom split plan
+- **按层面拆分** → Execute Step 6 with split commits (Commit 1, then Commit 2)
+- **合并为单个** → Execute Step 6 with single commit
+- **自定义方案** → Ask user for detailed split plan (support 3+ commits)
+
+**For 3+ splits**, use same pattern:
+
+```yaml
+questions:
+  - question: 检测到 3 个意图的变更（feat + fix + docs），如何提交？
+    header: 拆分决策
+    multiSelect: false
+    options:
+      - label: 按意图拆分（3 个提交）
+        description: feat → fix → docs 分别提交
+      - label: 合并 feat + fix
+        description: feat 和 fix 合并，docs 单独
+      - label: 全部合并
+        description: 所有变更合并为 1 个提交
+      - label: 自定义
+        description: 手动指定拆分方案
+```
+
+**Key principles**:
+- Support **2-5 splits** (beyond that, suggest manual intervention)
+- Each option should be **clear and actionable**
+- **Recommended option** should be first
+- **Custom option** allows flexible user control
 
 **Decision tree**:
 ```
@@ -366,8 +407,26 @@ Scan diff for:
 - deleted exports/interfaces
 - config schema changes
 
-If detected → suggest ! + footer
-Ask user confirmation: "这看起来是 breaking change，确认吗？"
+If breaking change detected → **use AskUserQuestion**:
+
+```yaml
+questions:
+  - question: 检测到可能的 breaking change（不兼容变更），确认吗？
+    header: Breaking Change 确认
+    multiSelect: false
+    options:
+      - label: 确认是 breaking change
+        description: 在 type/scope 后添加 ! 标记，并在 footer 说明BREAKING CHANGE
+      - label: 不是 breaking change
+        description: 普通提交，不添加 ! 标记
+      - label: 查看变更详情
+        description: 显示检测到的变更内容，再决定
+```
+
+**User selection handling**:
+- **确认是 breaking change** → Add `!` after type/scope, add BREAKING CHANGE footer
+- **不是 breaking change** → Normal commit without `!`
+- **查看变更详情** → Show detected changes (diff snippets), then ask again
 
 #### Body (Optional)
 
@@ -465,29 +524,48 @@ git commit -m 'message-2'
 
 #### Same File, Different Commits (Hunk-Level Split)
 
-If same file needs different commits:
+If same file needs different commits, **use AskUserQuestion**:
 
+```yaml
+questions:
+  - question: 文件 {file} 包含多个意图的变更，需要手动交互式拆分。是否继续？
+    header: 多意图文件拆分
+    multiSelect: false
+    options:
+      - label: 指导我交互式拆分
+        description: 提供 git add -p 命令指导，手动拆分 hunk
+      - label: 合并为单个提交
+        description: 不拆分，所有变更作为一个提交
+      - label: 查看文件变更
+        description: 显示文件的详细 diff，再决定
 ```
-⚠️  检测到文件 {file} 包含多个意图的变更
 
-建议手动交互式拆分:
+**User selection handling**:
+- **指导我交互式拆分** → Provide step-by-step `git add -p` instructions:
+  ```bash
+  # Step 1: View hunks
+  git diff --cached {file}
 
-方法 1: 按块撤出
-  git reset -p <file>
-  # 选择要撤出的 hunk
+  # Step 2: Interactive add
+  git add -p {file}
+  # y: stage this hunk
+  # n: don't stage this hunk
+  # a: stage this and all remaining hunks
+  # q: quit
 
-方法 2: 按块添加
-  git add -p <file>
-  # 先提交部分，再添加剩余
+  # Step 3: Commit first part
+  git commit -m "first commit message"
 
-是否现在进行交互式拆分？
-1. 是，指导我操作
-2. 否，合并为单个提交
-```
+  # Step 4: Add remaining
+  git add {file}
+  git commit -m "second commit message"
+  ```
+- **合并为单个提交** → Treat as single commit
+- **查看文件变更** → Show `git diff --cached {file}`, then ask again
 
 #### Dry-Run Mode
 
-If `--dry-run` flag present:
+If `--dry-run` flag present, show preview then **use AskUserQuestion**:
 
 ```
 🔍 Dry-Run Mode - 不会实际执行提交
@@ -509,12 +587,26 @@ Commit 1: {type}({scope}): {subject}
 
 === 质量检查 ===
 {validation_results}
-
-选项:
-1. 确认执行
-2. 调整方案
-3. 取消
 ```
+
+```yaml
+questions:
+  - question: Dry-run 预览完成，是否执行实际提交？
+    header: 执行确认
+    multiSelect: false
+    options:
+      - label: 确认执行
+        description: 执行计划的提交（真实 git commit）
+      - label: 调整方案
+        description: 修改提交计划或拆分方案
+      - label: 取消
+        description: 取消提交，不执行任何操作
+```
+
+**User selection handling**:
+- **确认执行** → Execute actual git commit(s) without dry-run
+- **调整方案** → Modify plan (change message, adjust split, etc.)
+- **取消** → Stop workflow, no changes made
 
 #### Verification
 
@@ -695,21 +787,28 @@ M docs/api/users.md
 - Should split
 
 **Result**:
+```yaml
+questions:
+  - question: 检测到多个意图（feat + docs），如何提交？
+    header: 多意图拆分
+    multiSelect: false
+    options:
+      - label: 按意图拆分（推荐）
+        description: 拆分为 2 个提交：feat → docs
+      - label: 合并为单个
+        description: 所有变更合并为 1 个提交
 ```
-⚠️  检测到多个意图，建议拆分为 2 个提交:
 
-Commit 1: feat(user): add user management feature
-  Files: 1
-  - backend/service/UserService.java
+**User selection handling**:
+- **按意图拆分** → Execute 2 commits:
+  ```bash
+  # Commit 1: feat
+  git commit --only backend/service/UserService.java -m 'feat(user): add user management feature'
 
-Commit 2: docs: update user API documentation
-  Files: 1
-  - docs/api/users.md
-
-选项:
-1. 确认拆分
-2. 合并为单个
-```
+  # Commit 2: docs
+  git commit --only docs/api/users.md -m 'docs: update user API documentation'
+  ```
+- **合并为单个** → Execute single commit with both files
 
 **For more examples**: See [references/EXAMPLES.md](references/EXAMPLES.md)
 
