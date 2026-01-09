@@ -33,6 +33,9 @@ git add <files>
 **Check environment**:
 
 ```bash
+# Disable bash history expansion to avoid issues with '!' in commit messages
+set +H
+
 # Verify git repository
 git rev-parse --is-inside-work-tree
 
@@ -828,7 +831,9 @@ Analyze:
 
 #### Breaking Change Detection
 
-Add `!` after type/scope if breaking change detected:
+**IMPORTANT**: The `!` character in breaking changes can trigger bash history expansion. Always ensure `set +H` is executed before running git commits with `!` to avoid parsing errors.
+
+Add ! after type/scope if breaking change detected:
 
 **Breaking indicators**:
 - Deleted/renamed public API
@@ -935,9 +940,15 @@ Co-authored-by: Claude Sonnet 4.5 <noreply@anthropic.com>
 
 ### Step 6: Execute Commit
 
+**Pre-execution check**: Ensure bash history expansion is disabled (`set +H`) to handle breaking changes with `!` character.
+
 #### Single Commit
 
 ```bash
+# Use single quotes to preserve special characters including '!'
+git commit -m '<message>'
+
+# Alternative: use double quotes with escaping
 git commit -m "<message>"
 ```
 
@@ -947,10 +958,11 @@ git commit -m "<message>"
 
 ```bash
 # Commit 1: Only specific files, keep others staged
-git commit --only path1 path2 path3 -m "message-1"
+# Use single quotes for breaking changes with '!'
+git commit --only path1 path2 path3 -m 'message-1'
 
 # Commit 2: Next set of files
-git commit --only path4 path5 -m "message-2"
+git commit --only path4 path5 -m 'message-2'
 
 # Verify all staged are committed
 git diff --cached --quiet
@@ -961,10 +973,10 @@ git diff --cached --quiet
 ```bash
 # Commit 1: Exclude some files
 git restore --staged -- path4 path5
-git commit -m "message-1"
+git commit -m 'message-1'
 
 # Commit 2: Commit the rest
-git commit -m "message-2"
+git commit -m 'message-2'
 ```
 
 **NEVER use粗暴的 `git reset`** - it destroys all staged state
